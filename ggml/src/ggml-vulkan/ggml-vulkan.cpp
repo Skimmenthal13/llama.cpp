@@ -8118,12 +8118,22 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
     vk_fa_tuning_params tuning_params = get_fa_tuning_params(ctx->device, HSK, HSV, 512, KV, k_type_eff, v_type_eff, f32acc);
     const uint32_t max_gqa = std::min(tuning_params.block_rows, 32u);
 
-    if (N <= 8 && qk_ratio > 1 && qk_ratio <= max_gqa &&
+    // if qk_ratio does not fit in one tile, use the largest divisor that fits
+    uint32_t gqa_group = std::min(qk_ratio, max_gqa);
+    while (gqa_group > 1 && qk_ratio % gqa_group != 0) {
+        gqa_group--;
+    }
+    // small groups give many workgroups without split_k, which is slower than no gqa
+    if (gqa_group < 4 && gqa_group != qk_ratio) {
+        gqa_group = 1;
+    }
+
+    if (N <= 8 && gqa_group > 1 &&
         qk_ratio * nek2 == neq2 && nek2 == nev2 && nem2 <= 1) {
         // grouped query attention - make the N dimension equal to gqa_ratio, reduce
         // workgroups proportionally in y dimension. The shader will detect gqa_ratio > 1
         // and change addressing calculations to index Q's dimension 2.
-        gqa_ratio = qk_ratio;
+        gqa_ratio = gqa_group;
         N = gqa_ratio;
         workgroups_y /= gqa_ratio;
     }
